@@ -36,3 +36,4 @@ ENV/
 # OS specific files
 .DS_Store
 Thumbs.db
+/lte_manager
