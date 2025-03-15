@@ -1,3 +1,5 @@
+![运行截图](ltetool.png)
+
 # LTE Tool / LTE 工具
 
 A Python+Qt application for managing communications with LTE modules. While specifically optimized for SIM7600CE-T modules, it's compatible with most modules supporting standard AT commands.
