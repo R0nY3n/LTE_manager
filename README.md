@@ -264,16 +264,9 @@ While optimized for SIM7600CE-T modules, this tool is designed to work with most
 If you find this tool helpful, consider supporting the developer:
 
 ### 中文:
-如果您觉得这个工具有用，可以考虑支持开发者:
+如果您觉得这个工具有用，可以考虑打赏支持开发者，谢谢:
 
-<!--
-Replace the following placeholders with your actual QR code images
-将以下占位符替换为您的实际二维码图片
--->
-
-| WeChat / 微信支付 | Alipay / 支付宝 |
-| --- | --- |
-| [WeChat QR Code] | [Alipay QR Code] |
+![支付宝收款码](alipay.png)
 
 ## License / 许可证
 
