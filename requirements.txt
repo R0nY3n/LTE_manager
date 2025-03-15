@@ -1,0 +1,4 @@
+PyQt5==5.15.9
+pyserial==3.5
+pyinstaller==6.0.0
+# SQLite is included in Python standard library
