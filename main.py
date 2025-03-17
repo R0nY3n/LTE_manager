@@ -58,9 +58,34 @@ class LTEToolApp(QMainWindow):
         self.phone_sms_tab = PhoneSmsTab(self.lte_manager, self.database, self.sound_manager)
         self.settings_tab = SettingsTab(self.lte_manager)
 
+        # 创建GitHub链接标签页
+        self.github_tab = QWidget()
+        github_layout = QVBoxLayout(self.github_tab)
+
+        # 添加GitHub链接标签
+        github_label = QLabel("访问GitHub项目页面获取最新版本和更新：")
+        github_label.setAlignment(Qt.AlignCenter)
+        github_layout.addWidget(github_label)
+
+        # 添加GitHub链接按钮
+        github_link = QLabel('<a href="https://github.com/R0nY3n/LTE_manager">https://github.com/R0nY3n/LTE_manager</a>')
+        github_link.setAlignment(Qt.AlignCenter)
+        github_link.setOpenExternalLinks(True)  # 允许打开外部链接
+        github_link.setTextInteractionFlags(Qt.TextBrowserInteraction)  # 允许文本交互
+        github_layout.addWidget(github_link)
+
+        # 添加说明文本
+        info_label = QLabel("欢迎在GitHub上提交问题、建议或贡献代码！")
+        info_label.setAlignment(Qt.AlignCenter)
+        github_layout.addWidget(info_label)
+
+        # 添加空白区域
+        github_layout.addStretch()
+
         # 添加标签页
         self.tab_widget.addTab(self.phone_sms_tab, "电话和短信")
         self.tab_widget.addTab(self.settings_tab, "设置")
+        self.tab_widget.addTab(self.github_tab, "GitHub")
 
         # 创建状态栏
         self.status_bar = QStatusBar()
