@@ -26,7 +26,7 @@ build/
 env/
 venv/
 ENV/
-
+ffmpeg/
 # IDE specific files
 .idea/
 .vscode/

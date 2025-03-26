@@ -28,6 +28,22 @@ def ucs2_to_text(hex_str):
         if len(hex_str) % 2 != 0:
             hex_str = hex_str + "0"  # Pad with zero if needed
 
+        # 针对特定格式长短信的处理（以62117ED94F6053D14E86957F6587672C开头）
+        if hex_str.startswith("62117ED94F6053D14E86957F6587672C"):
+            # 这是一种特定格式的长短信，尝试提取关键信息
+            # 通常格式是：固定标记 + "003A"(冒号) + URL内容
+            parts = hex_str.split("003A", 1)
+            if len(parts) > 1 and parts[1]:
+                try:
+                    # 提取并解码URL部分
+                    url_hex = "003A" + parts[1]  # 加回冒号
+                    url_bytes = binascii.unhexlify(url_hex)
+                    url_text = url_bytes.decode('utf-16be', errors='replace')
+                    return url_text
+                except Exception as url_error:
+                    print(f"URL extraction error: {str(url_error)}")
+                    # 如果提取失败，尝试完整解码
+
         # For phone numbers in UCS2 format (e.g., 002B00380036...)
         if hex_str.startswith("002B") or all(c in "0123456789ABCDEF" for c in hex_str):
             # Check if it's likely a phone number (starts with +)
@@ -60,7 +76,7 @@ def ucs2_to_text(hex_str):
         try:
             # Standard UCS2 decoding
             utf16be_bytes = binascii.unhexlify(hex_str)
-            text = utf16be_bytes.decode('utf-16be')
+            text = utf16be_bytes.decode('utf-16be', errors='replace')
             return text
         except Exception as e1:
             print(f"Primary UCS2 decoding failed: {str(e1)}")
@@ -68,36 +84,76 @@ def ucs2_to_text(hex_str):
             try:
                 # Try with different endianness
                 utf16le_bytes = binascii.unhexlify(hex_str)
-                text = utf16le_bytes.decode('utf-16le')
+                text = utf16le_bytes.decode('utf-16le', errors='replace')
                 return text
             except Exception as e2:
                 print(f"Secondary UCS2 decoding failed: {str(e2)}")
 
                 try:
-                    # Try decoding each 4-character chunk separately
+                    # 尝试以每4位（2字节）为单位解析，移除非ASCII字符
                     result = ""
                     i = 0
                     while i < len(hex_str):
                         if i + 4 <= len(hex_str):
                             chunk = hex_str[i:i+4]
                             try:
-                                char_bytes = binascii.unhexlify(chunk)
-                                char = char_bytes.decode('utf-16be', errors='ignore')
-                                if char:
+                                # 检查是否可能是ASCII字符（大多数ASCII UCS2编码格式为00xx）
+                                if chunk.startswith("00") and 32 <= int(chunk[2:4], 16) <= 126:
+                                    char = chr(int(chunk[2:4], 16))
                                     result += char
+                                # 对于非ASCII字符，尝试直接解码
+                                else:
+                                    char_bytes = binascii.unhexlify(chunk)
+                                    char = char_bytes.decode('utf-16be', errors='ignore')
+                                    if char:
+                                        result += char
                             except:
                                 pass
                             i += 4
                         else:
                             break
 
+                    # 检测结果中的URL
+                    url_match = None
+                    if "http" in result:
+                        url_match = result[result.find("http"):]
+                        # 截断到第一个不合法URL字符处
+                        for i, c in enumerate(url_match):
+                            if c.isspace() or c in '",\'<>()[]{}':
+                                url_match = url_match[:i]
+                                break
+
+                    # 如果找到URL，返回它
+                    if url_match and len(url_match) > 10:  # 确保URL足够长
+                        return url_match
+
+                    # 否则返回处理的结果
                     if result:
                         return result
                 except Exception as e3:
                     print(f"Chunk-by-chunk decoding failed: {str(e3)}")
 
-                    # If all decoding methods fail, return the original hex string
-                    return f"[Hex: {hex_str[:30]}...]"
+                # 如果所有解码方法都失败，最后尝试查找URL模式
+                try:
+                    # 查找HTTP URL的常见模式
+                    http_pattern = "00680074007400700073003A002F002F"  # "https://"
+                    http_alt = "00680074007400700073003a002f002f"  # 小写冒号和斜杠
+
+                    if http_pattern in hex_str or http_alt in hex_str:
+                        start_idx = hex_str.find(http_pattern) if http_pattern in hex_str else hex_str.find(http_alt)
+                        if start_idx >= 0:
+                            url_hex = hex_str[start_idx:]
+                            try:
+                                url_bytes = binascii.unhexlify(url_hex)
+                                url_text = url_bytes.decode('utf-16be', errors='replace')
+                                return url_text
+                            except:
+                                pass
+                except:
+                    pass
+
+                # 如果所有方法都失败，返回原始十六进制字符串
+                return f"[Hex: {hex_str[:30]}...]"
     except Exception as e:
         print(f"UCS2 decoding error: {str(e)}")
         return f"[Decode error: {hex_str[:30]}...]"

@@ -1,1 +1,7 @@
-{"at_port": "COM40", "at_baudrate": "115200", "nmea_port": "COM39", "nmea_baudrate": "9600"}
+{
+    "at_port": "COM6",
+    "at_baudrate": "115200",
+    "nmea_port": "None",
+    "nmea_baudrate": "9600",
+    "auto_connect": true
+}

@@ -3,9 +3,23 @@ import os
 from datetime import datetime
 
 class LTEDatabase:
-    def __init__(self, db_path='lte_data.db'):
-        """Initialize database connection"""
-        self.db_path = db_path
+    def __init__(self, db_path=None):
+        """初始化数据库连接
+
+        Args:
+            db_path: 数据库文件路径，如未指定则使用用户目录下的.LTE/lte_data.db
+        """
+        if db_path is None:
+            # 默认使用用户主目录下的.LTE文件夹
+            user_home = os.path.expanduser('~')
+            lte_dir = os.path.join(user_home, '.LTE')
+            if not os.path.exists(lte_dir):
+                os.makedirs(lte_dir)
+            self.db_path = os.path.join(lte_dir, 'lte_data.db')
+        else:
+            self.db_path = db_path
+
+        print(f"使用数据库: {self.db_path}")
         self.conn = None
         self.cursor = None
         self.connect()
@@ -72,6 +86,7 @@ class LTEDatabase:
         """
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"添加通话记录: {phone_number}, 类型: {call_type}, 持续时间: {duration}秒, 备注: {notes}")
             self.cursor.execute(
                 "INSERT INTO call_history (phone_number, call_type, duration, timestamp, notes) VALUES (?, ?, ?, ?, ?)",
                 (phone_number, call_type, duration, timestamp, notes)
@@ -79,7 +94,7 @@ class LTEDatabase:
             self.conn.commit()
             return self.cursor.lastrowid
         except Exception as e:
-            print(f"Add call error: {str(e)}")
+            print(f"添加通话记录出错: {str(e)}")
             return None
 
     def add_sms(self, phone_number, message, sms_type, status='sent'):

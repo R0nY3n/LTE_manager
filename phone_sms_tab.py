@@ -3,6 +3,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushBut
                             QListWidgetItem, QMessageBox, QSplitter, QComboBox,
                             QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy)
 from PyQt5.QtCore import Qt, pyqtSlot, QDateTime, QSize
+import time
 
 class PhoneSmsTab(QWidget):
     def __init__(self, lte_manager, database, sound_manager):
@@ -41,29 +42,38 @@ class PhoneSmsTab(QWidget):
         phone_top_layout = QVBoxLayout(phone_top_widget)
 
         # Phone controls
-        phone_group = QGroupBox("Phone Controls")
+        phone_group = QGroupBox("电话控制")
         phone_controls_layout = QVBoxLayout()
+
+        # 通话状态显示
+        self.call_status_display = QLabel("通话状态: 无通话")
+        self.call_status_display.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; background-color: #f0f0f0; border-radius: 3px;")
+        self.call_status_display.setAlignment(Qt.AlignCenter)
+        phone_controls_layout.addWidget(self.call_status_display)
 
         # Number input
         number_layout = QHBoxLayout()
-        number_layout.addWidget(QLabel("Phone Number:"))
+        number_layout.addWidget(QLabel("电话号码:"))
         self.phone_number_input = QLineEdit()
-        self.phone_number_input.setPlaceholderText("Enter phone number")
+        self.phone_number_input.setPlaceholderText("输入电话号码")
         number_layout.addWidget(self.phone_number_input)
         phone_controls_layout.addLayout(number_layout)
 
         # Call buttons
         call_buttons_layout = QHBoxLayout()
-        self.call_button = QPushButton("Call")
+        self.call_button = QPushButton("拨号")
+        self.call_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; padding: 6px; } QPushButton:disabled { background-color: #cccccc; }")
         self.call_button.clicked.connect(self.on_call_button_clicked)
         call_buttons_layout.addWidget(self.call_button)
 
-        self.answer_button = QPushButton("Answer")
+        self.answer_button = QPushButton("接听")
+        self.answer_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; padding: 6px; } QPushButton:disabled { background-color: #cccccc; }")
         self.answer_button.clicked.connect(self.on_answer_button_clicked)
         self.answer_button.setEnabled(False)
         call_buttons_layout.addWidget(self.answer_button)
 
-        self.hangup_button = QPushButton("Hang Up")
+        self.hangup_button = QPushButton("挂断")
+        self.hangup_button.setStyleSheet("QPushButton { background-color: #f44336; color: white; padding: 6px; } QPushButton:disabled { background-color: #cccccc; }")
         self.hangup_button.clicked.connect(self.on_hangup_button_clicked)
         self.hangup_button.setEnabled(False)
         call_buttons_layout.addWidget(self.hangup_button)
@@ -73,11 +83,33 @@ class PhoneSmsTab(QWidget):
         phone_top_layout.addWidget(phone_group)
 
         # DTMF tones received
-        dtmf_group = QGroupBox("DTMF Tones")
+        dtmf_group = QGroupBox("DTMF拨号音")
         dtmf_layout = QVBoxLayout()
         self.dtmf_display = QLineEdit()
         self.dtmf_display.setReadOnly(True)
         dtmf_layout.addWidget(self.dtmf_display)
+
+        # 添加DTMF拨号键盘
+        dtmf_keyboard_layout = QVBoxLayout()
+
+        # 添加拨号键盘行
+        dtmf_rows = [
+            ['1', '2', '3'],
+            ['4', '5', '6'],
+            ['7', '8', '9'],
+            ['*', '0', '#']
+        ]
+
+        for row in dtmf_rows:
+            row_layout = QHBoxLayout()
+            for key in row:
+                btn = QPushButton(key)
+                btn.setStyleSheet("QPushButton { font-size: 14px; padding: 10px; }")
+                btn.clicked.connect(lambda checked, k=key: self.send_dtmf(k))
+                row_layout.addWidget(btn)
+            dtmf_keyboard_layout.addLayout(row_layout)
+
+        dtmf_layout.addLayout(dtmf_keyboard_layout)
         dtmf_group.setLayout(dtmf_layout)
         phone_top_layout.addWidget(dtmf_group)
 
@@ -269,54 +301,183 @@ class PhoneSmsTab(QWidget):
         self.refresh_call_log()
         self.refresh_sms_history()
 
+    def update_call_ui_state(self, in_call=False):
+        """根据当前通话状态更新UI"""
+        try:
+            # 获取最新通话状态
+            if self.lte_manager.is_connected():
+                call_state = self.lte_manager.get_call_state_text()
+                self.call_status_display.setText(f"通话状态: {call_state}")
+
+                # 获取当前通话
+                calls = self.lte_manager.get_call_status()
+
+                if calls:
+                    # 有通话存在
+                    call = calls[0]
+                    stat = call.get('stat', -1)
+                    direction = call.get('dir', 0)
+
+                    # 根据通话状态更新按钮状态
+                    if stat == 4 and direction == 1:  # 来电中(MT)
+                        # 来电振铃中
+                        self.call_button.setEnabled(False)
+                        self.answer_button.setEnabled(True)
+                        self.hangup_button.setEnabled(True)
+
+                        # 设置不同的样式以提示用户
+                        self.call_status_display.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; background-color: #FFF9C4; color: #E65100; border-radius: 3px;")
+                    elif stat in [0, 1, 2, 3]:  # 活动、保持、拨号中、振铃中
+                        # 通话活动中
+                        self.call_button.setEnabled(False)
+                        self.answer_button.setEnabled(False)
+                        self.hangup_button.setEnabled(True)
+
+                        if stat == 0:  # 活动通话
+                            self.call_status_display.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; background-color: #C8E6C9; color: #2E7D32; border-radius: 3px;")
+                        elif stat == 1:  # 保持通话
+                            self.call_status_display.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; background-color: #BBDEFB; color: #1565C0; border-radius: 3px;")
+                        else:  # 拨号中、振铃中
+                            self.call_status_display.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; background-color: #E1BEE7; color: #6A1B9A; border-radius: 3px;")
+                    else:
+                        # 未知状态
+                        self.call_button.setEnabled(True)
+                        self.answer_button.setEnabled(False)
+                        self.hangup_button.setEnabled(False)
+                        self.call_status_display.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; background-color: #f0f0f0; border-radius: 3px;")
+                else:
+                    # 无通话
+                    self.call_button.setEnabled(True)
+                    self.answer_button.setEnabled(False)
+                    self.hangup_button.setEnabled(False)
+                    self.call_status_display.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; background-color: #f0f0f0; border-radius: 3px;")
+            else:
+                # 未连接
+                self.call_status_display.setText("通话状态: 未连接")
+                self.call_button.setEnabled(False)
+                self.answer_button.setEnabled(False)
+                self.hangup_button.setEnabled(False)
+                self.call_status_display.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; background-color: #FFCCBC; color: #BF360C; border-radius: 3px;")
+
+        except Exception as e:
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 更新通话UI状态出错: {str(e)}")
+            # 出错时重置为安全状态
+            self.call_button.setEnabled(True)
+            self.answer_button.setEnabled(False)
+            self.hangup_button.setEnabled(False)
+
+    def send_dtmf(self, tone):
+        """发送DTMF拨号音"""
+        if not self.lte_manager.is_connected() or not self.lte_manager.is_call_connected():
+            # 只有在通话活动时才能发送DTMF音
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 无法发送DTMF: 当前无活动通话")
+            self.sound_manager.play_error()
+            QMessageBox.warning(self, "DTMF错误", "只有在通话接通时才能发送拨号音")
+            return
+
+        try:
+            # 发送AT+VTS命令发送DTMF音
+            response = self.lte_manager.send_at_command(f"AT+VTS={tone}")
+            if "OK" in response:
+                # 发送成功，更新DTMF显示
+                current_text = self.dtmf_display.text()
+                self.dtmf_display.setText(current_text + tone)
+                self.sound_manager.play_dtmf()  # 播放提示音
+            else:
+                print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 发送DTMF音失败: {response}")
+                self.sound_manager.play_error()
+        except Exception as e:
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 发送DTMF音出错: {str(e)}")
+            self.sound_manager.play_error()
+
     def on_call_button_clicked(self):
-        """Handle call button click"""
+        """Make phone call"""
         number = self.phone_number_input.text().strip()
         if not number:
-            QMessageBox.warning(self, "Input Error", "Please enter a phone number")
+            QMessageBox.warning(self, "输入错误", "请输入电话号码")
             return
 
         if self.lte_manager.make_call(number):
             self.call_button.setEnabled(False)
             self.answer_button.setEnabled(False)
             self.hangup_button.setEnabled(True)
-            self.add_to_call_log(f"Outgoing call to {number}")
+            self.add_to_call_log(f"正在拨打 {number}")
+
+            # 更新通话状态
+            self.call_status_display.setText(f"通话状态: 呼出通话, 拨号中, 号码: {number}")
+            self.call_status_display.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; background-color: #E1BEE7; color: #6A1B9A; border-radius: 3px;")
 
             # Add to database
             self.database.add_call(number, "outgoing")
         else:
-            QMessageBox.warning(self, "Call Error", "Failed to make call")
+            QMessageBox.warning(self, "通话错误", "拨打电话失败")
             self.sound_manager.play_error()
 
     def on_answer_button_clicked(self):
-        """Handle answer button click"""
-        if self.lte_manager.answer_call():
+        """处理接听按钮点击"""
+        # 获取通话状态，确认有来电
+        calls = self.lte_manager.get_call_status()
+        has_incoming_call = False
+        caller_number = ""
+
+        for call in calls:
+            if call.get('stat') == 4 and call.get('dir') == 1:  # 来电中(MT)
+                has_incoming_call = True
+                caller_number = call.get('number', self.lte_manager.call_number)
+                break
+
+        if not has_incoming_call:
+            QMessageBox.warning(self, "通话错误", "当前没有待接听的来电")
+            self.sound_manager.play_error()
+            return
+
+        # 停止所有铃声
+        self._stop_all_ringtones()
+
+        # 尝试接听
+        answer_result = self.lte_manager.answer_call()
+
+        # 再次检查通话状态，确认是否实际接通（即使API返回失败）
+        time.sleep(0.5)  # 给模块一点时间更新状态
+        calls_after = self.lte_manager.get_call_status()
+        call_established = False
+
+        for call in calls_after:
+            if call.get('stat') in [0, 1] and call.get('dir') == 1:  # 活动或保持的呼入通话
+                call_established = True
+                break
+
+        if answer_result or call_established:
             self.call_button.setEnabled(False)
             self.answer_button.setEnabled(False)
             self.hangup_button.setEnabled(True)
-            self.add_to_call_log(f"Answered call from {self.lte_manager.call_number}")
+            self.add_to_call_log(f"已接听来电: {caller_number}")
 
-            # Stop ringtone
-            self.sound_manager.stop_ringtone()
+            # 更新通话状态
+            self.call_status_display.setText(f"通话状态: 呼入通话, 已接通, 号码: {caller_number}")
+            self.call_status_display.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; background-color: #C8E6C9; color: #2E7D32; border-radius: 3px;")
 
-            # Add to database
-            self.database.add_call(self.lte_manager.call_number, "incoming")
+            # 不需要重复添加数据库记录，main.py已经在显示来电对话框时添加
         else:
-            QMessageBox.warning(self, "Call Error", "Failed to answer call")
+            QMessageBox.warning(self, "通话错误", "接听来电失败")
             self.sound_manager.play_error()
 
     def on_hangup_button_clicked(self):
-        """Handle hangup button click"""
+        """处理挂断按钮点击"""
         if self.lte_manager.end_call():
             self.call_button.setEnabled(True)
             self.answer_button.setEnabled(False)
             self.hangup_button.setEnabled(False)
-            self.add_to_call_log("Call ended")
+            self.add_to_call_log("通话结束")
 
-            # Play call end sound
+            # 更新通话状态
+            self.call_status_display.setText("通话状态: 无通话")
+            self.call_status_display.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; background-color: #f0f0f0; border-radius: 3px;")
+
+            # 播放通话结束提示音
             self.sound_manager.play_call_end()
         else:
-            QMessageBox.warning(self, "Call Error", "Failed to end call")
+            QMessageBox.warning(self, "通话错误", "挂断电话失败")
             self.sound_manager.play_error()
 
     def on_send_sms_button_clicked(self):
@@ -356,53 +517,53 @@ class PhoneSmsTab(QWidget):
 
     def on_call_received(self, number):
         """Handle incoming call"""
-        self.call_button.setEnabled(False)
         self.answer_button.setEnabled(True)
+        self.call_button.setEnabled(False)
         self.hangup_button.setEnabled(True)
         self.add_to_call_log(f"Incoming call from {number}")
 
         # Play ringtone
         self.sound_manager.play_ringtone()
 
+        # Note: Call recording in database is now handled in the main window
+        # to ensure it's recorded exactly once when the notification appears
+
     def on_call_ended(self, duration):
-        """Handle call ended"""
+        """处理通话结束事件"""
+        self.sound_manager.play_call_end()
         self.call_button.setEnabled(True)
         self.answer_button.setEnabled(False)
         self.hangup_button.setEnabled(False)
-        self.add_to_call_log(f"Call ended: {duration}")
+        self.add_to_call_log(f"通话结束，持续时间: {duration}")
+
+        # 停止所有铃声
+        self._stop_all_ringtones()
+
+        # 清除DTMF显示
         self.dtmf_display.clear()
 
-        # Stop ringtone if still ringing
-        self.sound_manager.stop_ringtone()
+        # 更新通话状态
+        self.call_status_display.setText("通话状态: 无通话")
+        self.call_status_display.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; background-color: #f0f0f0; border-radius: 3px;")
 
-        # Play call end sound
-        self.sound_manager.play_call_end()
-
-        # Update call duration in database
-        # This is a simplification - in a real app, you'd need to match the call
-        if self.lte_manager.call_number:
-            try:
-                duration_seconds = int(duration) if duration != "Missed" else 0
-            except:
-                duration_seconds = 0
-
-            # For missed calls, add a new record
-            if duration == "Missed":
-                self.database.add_call(self.lte_manager.call_number, "missed", 0)
-            else:
-                # Update the most recent call with this number
-                # In a real app, you'd use a call ID to match exactly
-                calls = self.database.get_call_history(limit=1, phone_number=self.lte_manager.call_number)
-                if calls:
-                    call_id = calls[0][0]  # First column is ID
-                    self.database.cursor.execute(
-                        "UPDATE call_history SET duration = ? WHERE id = ?",
-                        (duration_seconds, call_id)
-                    )
-                    self.database.conn.commit()
-
-        # Refresh call log
+        # 刷新通话记录
         self.refresh_call_log()
+
+    def _stop_all_ringtones(self):
+        """停止所有铃声，确保彻底停止"""
+        try:
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 停止所有铃声")
+            self.sound_manager.stop_ringtone()
+            self.sound_manager.stop_incoming_call()
+
+            # 额外尝试停止系统声音
+            try:
+                import winsound
+                winsound.PlaySound(None, winsound.SND_PURGE)
+            except:
+                pass
+        except Exception as e:
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 停止铃声出错: {str(e)}")
 
     def on_sms_received(self, sender, timestamp, message):
         """Handle SMS received"""
