@@ -1,7 +1,14 @@
 {
-    "at_port": "COM6",
+    "at_port": "COM9",
     "at_baudrate": "115200",
     "nmea_port": "None",
     "nmea_baudrate": "9600",
-    "auto_connect": true
+    "auto_connect": true,
+    "audio_enabled": true,
+    "ringtone_file": "C:/Users/Ron21/.LTE/incommingcall.mp3",
+    "recording_path": "",
+    "auto_record_calls": true,
+    "auto_play_after_call": false,
+    "auto_play_on_answer": false,
+    "answer_play_audio_file": ""
 }

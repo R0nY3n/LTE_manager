@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
                             QSystemTrayIcon, QMenu, QAction)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QIcon, QPixmap, QPainter, QColor
-from datetime import datetime
+import traceback
 
 # 使用PyInstaller打包时的资源文件注意事项:
 # ----------------------------------
@@ -32,8 +32,7 @@ from database import LTEDatabase
 from sound_utils import SoundManager
 from audio import PCMAudio
 from ffmpeg_audio import FFmpegAudio  # 导入新的FFmpeg音频处理类
-from incoming_call import show_incoming_call, IncomingCallDialog
-from audio_features import AudioFeatures
+from incoming_call import show_incoming_call
 
 class LTEToolApp(QMainWindow):
     def __init__(self):
@@ -41,12 +40,20 @@ class LTEToolApp(QMainWindow):
         self.setWindowTitle("LTE Tool")
         self.resize(800, 600)
 
+        start_time = time.strftime('%Y-%m-%d %H:%M:%S')
+        print(f"{start_time} - LTE Tool 应用程序启动")
+
+        # 添加更新周期计数器，用于控制不同信息的更新频率
+        # 初始化为1，确保首次连接时执行完整的信息获取
+        self.update_counter = 1
+
         # 添加应用退出标志，用于区分最小化到托盘和退出程序
         self.is_exiting = False
 
         # 添加来电对话框标志，防止重复显示来电界面
         self.incoming_call_dialog_visible = False
         self.current_incoming_call_number = None
+        self._incoming_call_dialog = None
 
         # 加载图标文件
         self.load_icons()
@@ -90,10 +97,6 @@ class LTEToolApp(QMainWindow):
         # 创建声音管理器
         self.sound_manager = SoundManager()
 
-        # 创建音频功能管理器（用于通话录音和音频播放）
-        self.audio_features = AudioFeatures(self.lte_manager)
-        self.audio_features.status_changed.connect(self.on_status_changed)
-
         # 创建主窗口部件和布局
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -105,7 +108,7 @@ class LTEToolApp(QMainWindow):
 
         # 创建标签页
         self.phone_sms_tab = PhoneSmsTab(self.lte_manager, self.database, self.sound_manager)
-        self.settings_tab = SettingsTab(self.lte_manager, self.audio_features)
+        self.settings_tab = SettingsTab(self.lte_manager)
 
         # 创建GitHub链接标签页
         self.github_tab = QWidget()
@@ -137,39 +140,39 @@ class LTEToolApp(QMainWindow):
         self.tab_widget.addTab(self.github_tab, "GitHub")
 
         # 状态栏部件
-        self.carrier_label = QLabel("运营商: 未连接")
-        self.phone_number_label = QLabel("电话: 不可用")
-        self.network_label = QLabel("网络: 未连接")
-        self.signal_label = QLabel("信号: 不可用")
+        self.status_carrier = QLabel("运营商: 未连接")
+        self.status_phone = QLabel("电话: 不可用")
+        self.status_network = QLabel("网络: 未连接")
+        self.status_signal = QLabel("信号: 不可用")
         self.audio_status_label = QLabel("音频: 未初始化")
         self.call_status_label = QLabel("通话: 无通话")  # 添加通话状态标签
 
         # 添加部件到状态栏
-        self.statusBar().addWidget(self.carrier_label)
-        self.statusBar().addWidget(self.phone_number_label)
-        self.statusBar().addWidget(self.network_label)
-        self.statusBar().addWidget(self.signal_label)
+        self.statusBar().addWidget(self.status_carrier)
+        self.statusBar().addWidget(self.status_phone)
+        self.statusBar().addWidget(self.status_network)
+        self.statusBar().addWidget(self.status_signal)
         self.statusBar().addWidget(self.audio_status_label)
         self.statusBar().addWidget(self.call_status_label)  # 添加到状态栏
 
         # 现在可以安全地更新连接状态（初始为未连接）
         self.update_connection_status(False)
 
-        # 更新状态计时器
+        # 更新状态计时器 - 增加更长的更新间隔
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.update_status_bar)
-        self.status_timer.start(5000)  # 每5秒更新一次
+        self.status_timer.start(10000)  # 增加到10秒更新一次（从5秒改为10秒）
 
-        # 通话状态检查计时器
+        # 通话状态检查计时器 - 修改为不定期检查模式
         self.call_status_timer = QTimer()
         self.call_status_timer.timeout.connect(self.check_call_status)
-        # 不自动启动，只在需要时才启动
-        # self.call_status_timer.start(30000)  # 每秒检查一次通话状态
+        # 不再固定间隔调用check_call_status
+        # self.call_status_timer.start(1000)  # 每秒检查一次通话状态
 
-        # 添加标志控制通话状态检查
-        self.call_check_enabled = False  # 默认不检查通话状态
-        self.call_check_counter = 0      # 计数器，用于限制检查次数
-        self.max_call_checks = 3         # 最大连续检查次数
+        # 添加通话状态检查标志，用于控制何时检查通话状态
+        self.should_check_call_status = False
+        self.call_check_count = 0
+        self.max_call_checks = 3  # 最多连续检查3次
 
         # 连接信号
         self.lte_manager.status_changed.connect(self.on_status_changed)
@@ -186,19 +189,6 @@ class LTEToolApp(QMainWindow):
 
         # 尝试自动连接（如果启用）
         QTimer.singleShot(1000, self.try_auto_connect)
-
-        # 记录模块信息初始化状态
-        self.module_info_initialized = False
-        # 初始化更新计数器
-        self.update_counter = 1
-
-        # 初始化PCM音频处理状态
-        self.pcm_audio_registered = False
-
-        # 初始化标志
-        self.incoming_call_dialog = None
-        self.should_check_call_status = False
-        self.call_check_count = 0
 
     def initialize_audio_processor(self):
         """初始化PCM音频处理器（已禁用实际处理）"""
@@ -399,17 +389,17 @@ class LTEToolApp(QMainWindow):
                 )
 
             # 立即在数据库中记录来电
-            self.database.add_call(caller_number, "incoming", 0, "进行中")
+            self.database.add_call(caller_number, None, "未接来电", 0)
 
             # 立即显示来电对话框 - 不再使用QTimer延迟
             self._show_incoming_call_dialog(caller_number)
 
-            # 启用通话状态检查
-            self.call_check_enabled = True
-            self.call_check_counter = 0
+            # 设置应当检查通话状态的标志，并启动计时器
+            self.should_check_call_status = True
+            self.call_check_count = 0
             if not self.call_status_timer.isActive():
-                self.call_status_timer.start(2000)  # 每2秒检查一次
-                print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 启动通话状态检查定时器 (来电触发)")
+                self.call_status_timer.start(1000)  # 开始每秒检查一次通话状态
+
         except Exception as e:
             print(f"处理来电通知时出错: {str(e)}")
             # 确保铃声停止
@@ -484,99 +474,70 @@ class LTEToolApp(QMainWindow):
             self._incoming_call_dialog = None
 
     def _on_answer_call(self, phone_number, caller_name=None):
-        """
-        响应接听来电操作
-
-        参数:
-        - phone_number: 来电电话号码
-        - caller_name: 来电联系人名称（如果有）
-        """
-
+        """处理接听来电"""
         try:
-            # 停止所有铃声
+            # 1. 立即停止铃声
             self._ensure_ringtone_stopped()
 
-            # 保存当前呼叫的号码
-            self.lte_manager.call_number = phone_number
-
-            # 检查音频功能是否可用
-            has_audio_features = (hasattr(self, 'audio_features') and
-                                  self.audio_features is not None and
-                                  self.lte_manager.is_connected())
-
-            # 尝试接听来电
+            # 2. 尝试接听电话
             result = self.lte_manager.answer_call()
 
-            if result:
-                # 更新通话记录
-                current_time = datetime.now()
-                call_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S")
-                call_id = self.database.add_call_log(
-                    phone_number, "incoming", call_time_str, caller_name or "", 0
-                )
-                self.current_call_id = call_id
+            # 设置应当检查通话状态的标志，并启动计时器
+            self.should_check_call_status = True
+            self.call_check_count = 0
+            if not self.call_status_timer.isActive():
+                self.call_status_timer.start(1000)  # 开始每秒检查一次通话状态
 
-                self.add_status_message(f"已接听来自 {phone_number} 的来电")
+            # 3. 检查通话状态，确认是否实际接通（即使API返回失败）
+            time.sleep(0.5)  # 给模块一点时间更新状态
+            calls = self.lte_manager.get_call_status()
+            call_connected = False
 
-                # 保存当前通话状态
-                self.current_call_timer.start(1000)  # 启动通话计时器
-                self.call_start_time = current_time
+            for call in calls:
+                if call.get('stat') in [0, 1] and call.get('dir') == 1:  # 活动或保持的呼入通话
+                    call_connected = True
+                    break
 
-                # 如果有音频功能，尝试播放自动接听音频
-                if has_audio_features:
-                    # 先尝试自动播放接听音频
-                    if self.audio_features.auto_play_on_answer:
-                        self.add_status_message("尝试自动播放接听音频...")
-                        play_result = self.audio_features.play_on_answer(phone_number)
-                        if play_result:
-                            self.add_status_message("自动播放接听音频成功")
-                        else:
-                            self.add_status_message("自动播放接听音频失败")
+            if result or call_connected:
+                # 4. 修改数据库中的通话记录类型为"已接来电"
+                self.database.update_call_type(phone_number, "已接来电")
 
-                    # 再处理自动录音功能
-                    if self.audio_features.auto_record_calls:
-                        self.add_status_message("开始自动录制通话...")
-                        record_result, recording_file = self.audio_features.start_call_recording(phone_number)
-                        if record_result:
-                            self.add_status_message(f"自动录音已开始: {os.path.basename(recording_file)}")
-                        else:
-                            self.add_status_message("自动录音启动失败")
+                # 5. 更新UI状态
+                self.phone_sms_tab.add_to_call_log(f"已接听来电: {phone_number}")
+                self.phone_sms_tab.refresh_call_log()
+
+                # 6. 再次检查通话状态，确认通话是否仍然活跃
+                calls = self.lte_manager.get_call_status()
+                is_call_active = False
+                for call in calls:
+                    if call.get('stat') in [0, 1]:  # 活动或保持状态
+                        is_call_active = True
+                        break
+
+                if not is_call_active:
+                    # 如果通话已结束，确保再次停止铃声
+                    self._ensure_ringtone_stopped()
             else:
-                self.add_status_message(f"接听来自 {phone_number} 的来电失败")
-
-                # 尝试停止来电铃声（以防接听失败但铃声仍在继续）
-                self._ensure_ringtone_stopped()
-
-            # 关闭来电对话框
-            if hasattr(self, 'incoming_call_dialog') and self.incoming_call_dialog:
-                self.incoming_call_dialog.accept()
-                self.incoming_call_dialog = None
-
-            # 更新状态标签
-            self.update_status_labels()
-
-            # 启动通话状态检查定时器（确保及时发现通话状态变化）
-            self.check_call_status_timer.start(1000)  # 每秒检查一次
-
+                # 通知接听失败
+                QMessageBox.warning(self, "通话错误", "接听来电失败")
+                self.sound_manager.play_error()
+                self._ensure_ringtone_stopped()  # 再次确保铃声停止
         except Exception as e:
-            self.add_status_message(f"处理接听来电时发生错误: {str(e)}")
-            import traceback
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 接听来电出错: {str(e)}")
             traceback.print_exc()
-
-            # 如果有开始录音，尝试停止
-            if has_audio_features and self.audio_features.recording:
-                self.audio_features.stop_recording()
-
-            # 确保来电对话框关闭
-            if hasattr(self, 'incoming_call_dialog') and self.incoming_call_dialog:
-                self.incoming_call_dialog.accept()
-                self.incoming_call_dialog = None
+            self._ensure_ringtone_stopped()  # 确保在异常情况下也停止铃声
 
     def _on_reject_call(self, phone_number, caller_name=None):
         """处理拒接来电"""
         try:
             # 1. 立即停止铃声
             self._ensure_ringtone_stopped()
+
+            # 设置应当检查通话状态的标志，并启动计时器
+            self.should_check_call_status = True
+            self.call_check_count = 0
+            if not self.call_status_timer.isActive():
+                self.call_status_timer.start(1000)  # 开始每秒检查一次通话状态
 
             # 2. 尝试挂断电话
             if self.lte_manager.end_call():
@@ -591,28 +552,10 @@ class LTEToolApp(QMainWindow):
 
             # 5. 再次确保铃声停止
             self._ensure_ringtone_stopped()
-
-            # 6. 确保停止任何可能正在进行的录音
-            if hasattr(self, 'audio_features') and self.audio_features.recording:
-                self.audio_features.stop_recording()
-
-            # 启用通话状态检查（短暂检查以确认通话已结束）
-            self.call_check_enabled = True
-            self.call_check_counter = 0
-            if not self.call_status_timer.isActive():
-                self.call_status_timer.start(2000)  # 每2秒检查一次
-                print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 启动通话状态检查定时器 (拒接触发)")
         except Exception as e:
             print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 拒绝来电出错: {str(e)}")
             traceback.print_exc()
             self._ensure_ringtone_stopped()  # 确保在异常情况下也停止铃声
-
-            # 确保在异常情况下也停止录音
-            if hasattr(self, 'audio_features') and self.audio_features.recording:
-                try:
-                    self.audio_features.stop_recording()
-                except:
-                    pass
 
     def _ensure_ringtone_stopped(self):
         """确保所有铃声已停止"""
@@ -642,13 +585,14 @@ class LTEToolApp(QMainWindow):
         self.incoming_call_dialog_visible = False
         self.current_incoming_call_number = None
 
-        # 检查是否有录音正在进行，如果有则停止
-        if hasattr(self, 'audio_features') and self.audio_features.recording:
-            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 通话结束，停止录音")
-            self.audio_features.stop_recording()
-
         # 记录通话结束信息
         print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 接收到通话结束信号，持续时间: {duration}")
+
+        # 设置应当检查通话状态的标志，并启动计时器确认通话已结束
+        self.should_check_call_status = True
+        self.call_check_count = 0
+        if not self.call_status_timer.isActive():
+            self.call_status_timer.start(1000)  # 开始每秒检查一次通话状态
 
         # 使用状态栏显示消息
         if duration.isdigit():
@@ -687,37 +631,56 @@ class LTEToolApp(QMainWindow):
                     # 如果找不到记录，添加一个新记录（这应该是不常见的情况）
                     self.database.add_call(
                         self.lte_manager.call_number,
-                        "missed" if duration == "Missed" or duration_seconds == 0 else "incoming",
+                        None,
+                        "未接来电" if duration == "Missed" or duration_seconds == 0 else "已接来电",
                         duration_seconds
                     )
                     print(f"新增通话记录，号码 {self.lte_manager.call_number}，持续时间 {duration_seconds}秒")
             except Exception as e:
                 print(f"更新通话记录出错: {str(e)}")
 
-        # 暂时继续检查通话状态，以确认通话确实已结束
-        self.call_check_enabled = True
-        self.call_check_counter = 0
-        if not self.call_status_timer.isActive():
-            self.call_status_timer.start(2000)  # 每2秒检查一次
-            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 启动通话状态检查定时器 (通话结束触发)")
+    def _reset_audio_processor_state(self):
+        """重置音频处理器状态（已简化为空操作）"""
+        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 重置音频处理器状态（空操作，处理已禁用）")
+
+    def _stop_audio_with_timeout(self):
+        """停止音频处理（已简化为空操作）"""
+        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 停止音频处理（空操作，处理已禁用）")
+
+    def _cleanup_audio_resources(self):
+        """清理所有音频相关资源（已简化为仅日志记录）"""
+        # 更新状态
+        try:
+            self.audio_status_label.setText("音频: 非活动")
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 音频资源清理（空操作，处理已禁用）")
+        except Exception as e:
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 清理音频资源出错: {str(e)}")
+
+        # 确保停止任何正在播放的声音
+        try:
+            self.sound_manager.stop_ringtone()
+            self.sound_manager.stop_incoming_call()
+        except Exception as e:
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 停止声音时出错: {str(e)}")
 
     def check_call_status(self):
-        """定期检查通话状态并更新UI（只在需要时执行）"""
-        if not self.lte_manager.is_connected() or not self.call_check_enabled:
-            # 如果未连接或不需要检查，停止定时器
-            if self.call_status_timer.isActive():
-                self.call_status_timer.stop()
-                print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 停止通话状态检查定时器")
-
-                # 如果之前在录音，确保停止录音
-                if hasattr(self, 'audio_features') and self.audio_features.recording:
-                    print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 检测到通话已结束，停止录音")
-                    self.audio_features.stop_recording()
+        """定期检查通话状态并更新UI"""
+        if not self.lte_manager.is_connected():
+            # 如果未连接，停止检查
+            self.call_status_timer.stop()
+            self.should_check_call_status = False
             return
 
-        try:
-            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 检查通话状态 (计数: {self.call_check_counter+1}/{self.max_call_checks})")
+        # 检查是否需要进行通话状态检查
+        if not self.should_check_call_status:
+            # 如果不需要继续检查，停止定时器
+            self.call_status_timer.stop()
+            return
 
+        # 增加检查计数
+        self.call_check_count += 1
+
+        try:
             # 获取当前通话状态文本
             call_state = self.lte_manager.get_call_state_text()
 
@@ -727,170 +690,109 @@ class LTEToolApp(QMainWindow):
             # 根据通话状态更新通话按钮状态
             calls = self.lte_manager.get_call_status()
 
+            # 检查是否有应该显示的来电提示
+            if calls and not self.incoming_call_dialog_visible:
+                for call in calls:
+                    if call.get('stat') == 4 and call.get('dir') == 1:  # 来电中(MT)
+                        number = call.get('number', '未知号码')
+                        # 不在通知中直接显示来电对话框，因为呼叫信号会通过call_received正常触发
+                        break
+
             # 更新UI以反映当前的通话状态
             self.phone_sms_tab.update_call_ui_state(bool(calls))
 
-            # 增加计数器
-            self.call_check_counter += 1
-
-            # 如果达到最大检查次数或没有活跃通话，停止检查
-            if self.call_check_counter >= self.max_call_checks or not calls:
-                self.call_check_enabled = False
+            # 如果到达最大检查次数或没有活跃通话，停止定期检查
+            if self.call_check_count >= self.max_call_checks or not calls:
+                print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 通话状态检查完成，停止定期检查")
+                self.should_check_call_status = False
                 self.call_status_timer.stop()
-                print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 停止通话状态检查定时器 (已完成{self.call_check_counter}次检查)")
-
-                # 如果没有活跃通话且之前在录音，停止录音
-                if not calls and hasattr(self, 'audio_features') and self.audio_features.recording:
-                    print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 检测到通话已结束，停止录音")
-                    self.audio_features.stop_recording()
 
         except Exception as e:
             print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 检查通话状态出错: {str(e)}")
-            # 发生错误时也要停止定时器
-            self.call_check_enabled = False
+            # 出错时也停止检查
+            self.should_check_call_status = False
             self.call_status_timer.stop()
 
-            # 如果出错且之前在录音，确保录音也被停止
-            if hasattr(self, 'audio_features') and self.audio_features.recording:
-                try:
-                    self.audio_features.stop_recording()
-                except:
-                    pass
+    # 在phone_sms_tab.py中调用dial_button和end_call_button点击时也需要手动触发通话状态检查
 
     def update_status_bar(self):
-        """更新状态栏信息"""
-        is_connected = self.lte_manager.is_connected()
-
-        # 如果连接状态发生变化，记录并触发更新
-        if not hasattr(self, 'last_connection_state'):
-            self.last_connection_state = is_connected
-
-        # 连接状态变化时，强制刷新所有信息
-        if self.last_connection_state != is_connected:
-            self.last_connection_state = is_connected
-            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 连接状态变化，刷新所有设备信息")
-            if is_connected:
-                # 重置模块信息初始化状态，强制获取新信息
-                self.module_info_initialized = False
-                # 重置更新计数器
-                self.update_counter = 1
-                # 立即强制更新所有状态信息
-                self._update_all_status_info()
-
-        # 未连接时，直接使用默认标签
-        if not is_connected:
-            self.update_status_labels()
+        """更新状态栏显示的信息"""
+        if not self.lte_manager.is_connected():
             return
 
         try:
-            # 使用update_counter控制不同类型信息的更新频率
-            if not hasattr(self, 'update_counter'):
-                self.update_counter = 1
-
-            # 每3次更新一次信号强度（约30秒）
-            if self.update_counter % 3 == 0:
-                signal_strength = self.lte_manager.get_signal_strength()
-                if signal_strength:
-                    self.signal_label.setText(f"信号: {signal_strength}")
-
-            # 每60次更新一次运营商信息（约10分钟）
-            if self.update_counter % 60 == 0:
-                carrier = self.lte_manager.get_carrier_info()
-                if carrier:
-                    self.carrier_label.setText(f"运营商: {carrier}")
-
-                network_info = self.lte_manager.get_network_info()
-                if network_info:
-                    self.network_label.setText(f"网络: {network_info}")
-
-            # 计数器自增
+            # 递增更新计数器，用于控制不同信息的更新频率
             self.update_counter += 1
-            # 每120次重置一次（避免无限增长）
-            if self.update_counter > 120:
-                self.update_counter = 1
+
+            # 每次都更新信号强度
+            signal_info = self.lte_manager.get_signal_strength()
+            if signal_info:
+                try:
+                    if isinstance(signal_info, tuple) and len(signal_info) == 2:
+                        signal_text, signal_desc = signal_info
+                        if signal_desc:
+                            self.status_signal.setText(f"信号: {signal_text} ({signal_desc})")
+                        else:
+                            self.status_signal.setText(f"信号: {signal_text}")
+                    else:
+                        self.status_signal.setText(f"信号: {signal_info}")
+                except Exception as e:
+                    print(f"处理信号强度信息出错: {str(e)}")
+                    self.status_signal.setText(f"信号: {signal_info}")
+
+            # 仅在首次连接或每10个周期更新一次运营商信息和电话号码
+            if self.update_counter == 1 or self.update_counter % 10 == 0:
+                # 更新运营商信息
+                carrier_info = self.lte_manager.get_carrier_info()
+                if carrier_info:
+                    try:
+                        if isinstance(carrier_info, tuple) and len(carrier_info) == 2:
+                            carrier, network_type = carrier_info
+                            self.status_carrier.setText(f"运营商: {carrier} ({network_type})")
+                        else:
+                            self.status_carrier.setText(f"运营商: {carrier_info}")
+                    except Exception as e:
+                        print(f"处理运营商信息出错: {str(e)}")
+                        self.status_carrier.setText(f"运营商: {carrier_info}")
+
+                # 更新电话号码
+                phone_number = self.lte_manager.get_phone_number()
+                if phone_number:
+                    self.status_phone.setText(f"电话: {phone_number}")
+
+            # 如果计数器达到30，重置它
+            if self.update_counter >= 30:
+                self.update_counter = 0
 
         except Exception as e:
             print(f"更新状态栏时出错: {str(e)}")
-            # 出错时仍更新标签（使用缓存值）
-            self.update_status_labels()
-
-    def _update_all_status_info(self):
-        """立即更新所有状态信息"""
-        try:
-            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 立即更新所有状态信息")
-
-            # 获取电话号码
-            phone_number = self.lte_manager.get_phone_number()
-            if phone_number:
-                self.phone_number_label.setText(f"电话: {phone_number}")
-
-            # 获取运营商信息
-            carrier = self.lte_manager.get_carrier_info()
-            if carrier:
-                self.carrier_label.setText(f"运营商: {carrier}")
-
-            # 获取网络信息
-            network_info = self.lte_manager.get_network_info()
-            if network_info:
-                self.network_label.setText(f"网络: {network_info}")
-
-            # 获取信号强度
-            signal_strength = self.lte_manager.get_signal_strength()
-            if signal_strength:
-                self.signal_label.setText(f"信号: {signal_strength}")
-
-            # 记录更新完成
-            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 状态信息更新完成")
-        except Exception as e:
-            print(f"更新全部状态信息时出错: {str(e)}")
-
-    def _on_timer_status_update(self):
-        """状态定时器更新回调"""
-        try:
-            # 更新状态栏
-            self.update_status_bar()
-
-            # 获取模块信息（仅在首次启动时）
-            if not hasattr(self, 'module_info_initialized') or not self.module_info_initialized:
-                if self.lte_manager.is_connected():
-                    module_info = self.lte_manager.get_module_info()
-                    if module_info.get('imei'):  # 如果有IMEI，认为初始化成功
-                        self.module_info_initialized = True
-                        # 显式更新所有状态信息
-                        self._update_all_status_info()
-        except Exception as e:
-            print(f"定时状态更新错误: {str(e)}")
-
-    def initialize_timers(self):
-        """初始化定时器"""
-        # 状态更新定时器（每10秒更新一次，而不是5秒）
-        self.status_timer = QTimer()
-        self.status_timer.timeout.connect(self._on_timer_status_update)
-        self.status_timer.start(10000)  # 10秒更新一次
+            traceback.print_exc()
 
     def on_status_changed(self, status):
-        """处理状态变化事件"""
+        """处理状态变化"""
         try:
-            # 更新状态栏中的消息
-            self.statusBar().showMessage(status, 5000)  # 显示5秒
-
-            # 记录日志
-            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {status}")
+            # 在状态栏显示消息
+            self.statusBar().showMessage(status, 5000)
 
             # 更新托盘图标中的连接状态
-            if "Connected to" in status:
+            if "Connected to LTE module" in status:
                 self.update_connection_status(True)
-                # 模块连接成功后立即更新所有状态信息
-                QTimer.singleShot(1000, self._update_all_status_info)
-            elif "Disconnected" in status:
+                # 连接成功后强制立即进行第一次状态更新（使用延时确保连接流程完成后再更新）
+                self.update_counter = 0  # 重置计数器
+                QTimer.singleShot(500, self.update_status_bar)  # 0.5秒后更新状态栏
+            elif "Disconnected from LTE module" in status:
                 self.update_connection_status(False)
+                # 立即更新状态栏为未连接状态
+                self.status_carrier.setText("运营商: 未连接")
+                self.status_phone.setText("电话: 不可用")
+                self.status_network.setText("网络: 未连接")
+                self.status_signal.setText("信号: 不可用")
+                self.call_status_label.setText("通话: 无通话")
             elif "error" in status.lower() or "失败" in status or "failed" in status.lower():
                 # 检测到错误状态
                 self.show_error_status(status)
-
-            # 当LTE模块初始化完成时，更新所有状态信息
-            if "LTE模块初始化完成" in status:
-                QTimer.singleShot(500, self._update_all_status_info)
+                # 出错时可能需要重新获取某些信息，强制下次执行完整更新
+                self.update_counter = 9
         except Exception as e:
             print(f"状态更新出错: {str(e)}")
             self.show_error_status(f"状态更新出错: {str(e)}")
@@ -936,6 +838,7 @@ class LTEToolApp(QMainWindow):
 
         # 断开LTE模块连接
         if self.lte_manager.is_connected():
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 正在关闭LTE模块连接...")
             self.lte_manager.disconnect()
 
         # 移除托盘图标
@@ -946,9 +849,14 @@ class LTEToolApp(QMainWindow):
         event.accept()
 
     def _exit_application(self):
-        """完全退出应用程序"""
+        """退出应用程序"""
+        if self.lte_manager and self.lte_manager.is_connected():
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 正在关闭LTE模块连接...")
+            self.lte_manager.disconnect()
+
         self.is_exiting = True
-        self.close()
+        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - LTE Tool 应用程序退出")
+        QApplication.quit()
 
     def update_connection_status(self, connected):
         """更新托盘图标中的连接状态"""
@@ -998,31 +906,6 @@ class LTEToolApp(QMainWindow):
             )
         except Exception as e:
             print(f"显示错误状态时出错: {str(e)}")
-
-    def update_status_labels(self):
-        """更新状态栏标签内容（使用缓存或默认值）"""
-        is_connected = self.lte_manager.is_connected()
-        self.update_connection_status(is_connected)
-
-        if is_connected:
-            # 尝试使用缓存值，如果没有则使用默认值
-            carrier = getattr(self.lte_manager, 'carrier', 'Unknown')
-            phone = getattr(self.lte_manager, 'phone_number', 'Unknown')
-            network = getattr(self.lte_manager, 'network_type', 'Unknown')
-            signal = getattr(self.lte_manager, 'signal_strength', 'Unknown')
-
-            # 更新界面标签
-            self.carrier_label.setText(f"运营商: {carrier}")
-            self.phone_number_label.setText(f"电话: {phone}")
-            self.network_label.setText(f"网络: {network}")
-            self.signal_label.setText(f"信号: {signal}")
-        else:
-            # 如果未连接，显示默认值
-            self.carrier_label.setText("运营商: 未连接")
-            self.phone_number_label.setText("电话: 不可用")
-            self.network_label.setText("网络: 未连接")
-            self.signal_label.setText("信号: 不可用")
-            self.call_status_label.setText("通话: 无通话")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
